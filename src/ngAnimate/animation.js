@@ -19,8 +19,8 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
     return element.data(RUNNER_STORAGE_KEY);
   }
 
-  this.$get = ['$$jqLite', '$rootScope', '$injector', '$$AnimateRunner', '$$HashMap',
-       function($$jqLite,   $rootScope,   $injector,   $$AnimateRunner,   $$HashMap) {
+  this.$get = ['$$jqLite', '$rootScope', '$injector', '$$AnimateRunner', '$$HashMap', '$$rAFScheduler',
+       function($$jqLite,   $rootScope,   $injector,   $$AnimateRunner,   $$HashMap,   $$rAFScheduler) {
 
     var animationQueue = [];
     var applyAnimationClasses = applyAnimationClassesFactory($$jqLite);
@@ -88,11 +88,11 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
           if (remainingLevelEntries <= 0) {
             remainingLevelEntries = nextLevelEntries;
             nextLevelEntries = 0;
-            result = result.concat(row);
+            result.push(row);
             row = [];
           }
           row.push(entry.fn);
-          forEach(entry.children, function(childEntry) {
+          entry.children.forEach(function(childEntry) {
             nextLevelEntries++;
             queue.push(childEntry);
           });
@@ -100,14 +100,15 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         }
 
         if (row.length) {
-          result = result.concat(row);
+          result.push(row);
         }
+
         return result;
       }
     }
 
     // TODO(matsko): document the signature in a better way
-    return function(element, event, options, onBeforeClassesAppliedCb) {
+    return function(element, event, options) {
       options = prepareAnimationOptions(options);
       var isStructural = ['enter', 'move', 'leave'].indexOf(event) >= 0;
 
@@ -132,6 +133,12 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
       if (tempClasses) {
         classes += ' ' + tempClasses;
         options.tempClasses = null;
+      }
+
+      var prepareClassName;
+      if (isStructural) {
+        prepareClassName = 'ng-' + event + PREPARE_CLASS_SUFFIX;
+        $$jqLite.addClass(element, prepareClassName);
       }
 
       animationQueue.push({
@@ -159,8 +166,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
           // the element was destroyed early on which removed the runner
           // form its storage. This means we can't animate this element
           // at all and it already has been closed due to destruction.
-          var elm = entry.element;
-          if (getRunner(elm) && getDomNode(elm).parentNode) {
+          if (getRunner(entry.element)) {
             animations.push(entry);
           } else {
             entry.close();
@@ -191,7 +197,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
                   : animationEntry.element;
 
               if (getRunner(targetElement)) {
-                var operation = invokeFirstDriver(animationEntry, onBeforeClassesAppliedCb);
+                var operation = invokeFirstDriver(animationEntry);
                 if (operation) {
                   startAnimationFn = operation.start;
                 }
@@ -211,11 +217,9 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         });
 
         // we need to sort each of the animations in order of parent to child
-        // relationships. This ensures that the parent to child classes are
-        // applied at the right time.
-        forEach(sortAnimations(toBeSortedAnimations), function(triggerAnimation) {
-          triggerAnimation();
-        });
+        // relationships. This ensures that the child classes are applied at the
+        // right time.
+        $$rAFScheduler(sortAnimations(toBeSortedAnimations));
       });
 
       return runner;
@@ -285,7 +289,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
           var lookupKey = from.animationID.toString();
           if (!anchorGroups[lookupKey]) {
             var group = anchorGroups[lookupKey] = {
-              // TODO(matsko): double-check this code
+              structural: true,
               beforeStart: function() {
                 fromAnimation.beforeStart();
                 toAnimation.beforeStart();
@@ -301,7 +305,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
             };
 
             // the anchor animations require that the from and to elements both have at least
-            // one shared CSS class which effictively marries the two elements together to use
+            // one shared CSS class which effectively marries the two elements together to use
             // the same animation driver and to properly sequence the anchor animation.
             if (group.classes.length) {
               preparedAnimations.push(group);
@@ -339,7 +343,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         return matches.join(' ');
       }
 
-      function invokeFirstDriver(animationDetails, onBeforeClassesAppliedCb) {
+      function invokeFirstDriver(animationDetails) {
         // we loop in reverse order since the more general drivers (like CSS and JS)
         // may attempt more elements, but custom drivers are more particular
         for (var i = drivers.length - 1; i >= 0; i--) {
@@ -347,7 +351,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
           if (!$injector.has(driverName)) continue; // TODO(matsko): remove this check
 
           var factory = $injector.get(driverName);
-          var driver = factory(animationDetails, onBeforeClassesAppliedCb);
+          var driver = factory(animationDetails);
           if (driver) {
             return driver;
           }
@@ -358,6 +362,10 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         element.addClass(NG_ANIMATE_CLASSNAME);
         if (tempClasses) {
           $$jqLite.addClass(element, tempClasses);
+        }
+        if (prepareClassName) {
+          $$jqLite.removeClass(element, prepareClassName);
+          prepareClassName = null;
         }
       }
 
